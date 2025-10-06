@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -29,6 +30,40 @@ def load_checkpoint(path: Path, model: nn.Module, optimizer: Optional[torch.opti
     return data.get("step", 0)
 
 
+def apply_config(parser: argparse.ArgumentParser, args: argparse.Namespace) -> argparse.Namespace:
+    """Overwrite argparse namespace values with entries from a JSON config."""
+    if args.config is None:
+        return args
+
+    config_path = Path(args.config)
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with config_path.open("r", encoding="utf-8") as handle:
+        config_data = json.load(handle)
+
+    if not isinstance(config_data, dict):
+        raise ValueError("Config file must contain a JSON object at the top level.")
+
+    defaults = {action.dest: action.default for action in parser._actions if action.dest is not None}
+
+    for key, value in config_data.items():
+        if key == "config":
+            continue  # ignore recursive specification
+        if not hasattr(args, key):
+            raise KeyError(f"Unknown config key '{key}'")
+
+        current = getattr(args, key)
+        default = defaults.get(key)
+        if key == "train_frame_indices" and isinstance(value, (list, tuple)):
+            value = ",".join(str(item) for item in value)
+
+        if current == default:
+            setattr(args, key, value)
+
+    return args
+
+
 def train(args):
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
@@ -37,7 +72,16 @@ def train(args):
         frame_subset = [int(item.strip()) for item in args.train_frame_indices.split(",") if item.strip()]
 
     dataset = BlenderDataset(args.dataset_root, split="train", frame_subset=frame_subset)
-    model = PhaseFieldModel().to(device)
+    if not (0 <= args.model_skip_layer < args.model_num_trunk_layers):
+        raise ValueError("model_skip_layer must lie in [0, model_num_trunk_layers).")
+
+    model = PhaseFieldModel(
+        pos_freqs=args.model_pos_freqs,
+        dir_freqs=args.model_dir_freqs,
+        hidden_dim=args.model_hidden_dim,
+        num_trunk_layers=args.model_num_trunk_layers,
+        skip_layer=args.model_skip_layer,
+    ).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     wandb_run = None
@@ -87,6 +131,7 @@ def train(args):
         print(f"Resumed from {ckpt_path} at step {start_step}")
 
     model.train()
+    last_psnr = None
 
     for step in range(start_step + 1, args.max_iters + 1):
         ray_origins, ray_dirs, target_rgb = dataset.sample_random_rays(args.rays_per_batch, device)
@@ -139,6 +184,7 @@ def train(args):
                 mse = img_loss.item()
                 psnr = -10.0 * torch.log10(torch.tensor(mse + 1e-10)).item()
             print(f"step {step:06d} | psnr {psnr:.2f} dB")
+            last_psnr = psnr
             if wandb_run is not None:
                 wandb.log({"metrics/psnr": psnr}, step=step)
 
@@ -150,12 +196,20 @@ def train(args):
     save_checkpoint(final_ckpt, args.max_iters, model, optimizer)
     print(f"Training complete. Saved final checkpoint to {final_ckpt}")
     if wandb_run is not None:
+        if last_psnr is not None:
+            wandb.log({"metrics/final_psnr": last_psnr}, step=args.max_iters)
         wandb_run.finish()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Neural Phase-Field Radiance Field training")
+    parser.add_argument("--config", type=str, default=None, help="Path to JSON config with training arguments.")
     parser.add_argument("--dataset-root", default="data/nerf_synthetic/lego", help="Root to Blender LEGO dataset")
+    parser.add_argument("--model-pos-freqs", type=int, default=10, help="Number of position encoding frequencies.")
+    parser.add_argument("--model-dir-freqs", type=int, default=4, help="Number of direction encoding frequencies.")
+    parser.add_argument("--model-hidden-dim", type=int, default=256, help="Hidden layer width for the trunk MLP.")
+    parser.add_argument("--model-num-trunk-layers", type=int, default=8, help="Number of layers in the shared trunk.")
+    parser.add_argument("--model-skip-layer", type=int, default=4, help="Index of the skip connection layer in the trunk.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--rays-per-batch", type=int, default=1024)
     parser.add_argument("--num-samples", type=int, default=128)
@@ -193,4 +247,5 @@ if __name__ == "__main__":
     parser.add_argument("--wandb-tags", type=str, default=None, help="Comma-separated list of WandB tags")
     parser.add_argument("--wandb-mode", type=str, default="online", choices=["online", "offline", "disabled"], help="WandB operating mode")
     args = parser.parse_args()
+    args = apply_config(parser, args)
     train(args)

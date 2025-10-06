@@ -6,6 +6,13 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def smooth_bump(phi: torch.Tensor) -> torch.Tensor:
+    """Smooth bump that peaks at phi=0 and vanishes at phi=\pm1."""
+    safe_denom = torch.clamp(1.0 - phi ** 2, min=1e-6)
+    bump_core = torch.exp(-1.0 / safe_denom) * math.e
+    return torch.where(phi.abs() < 1.0, bump_core, torch.zeros_like(phi))
+
+
 def positional_encoding(x: torch.Tensor, num_freqs: int) -> torch.Tensor:
     """Applies NeRF-style positional encoding without the base coordinates."""
     if num_freqs <= 0:
@@ -124,9 +131,8 @@ def integrate_rays(model: PhaseFieldModel,
     )[0]
     grads = grads.view(num_rays, num_samples, 3)
 
-    grad_norm = torch.linalg.norm(grads, dim=-1) + 1e-8
-    delta = (eps_rend / (eps_rend ** 2 + phi ** 2)) / math.pi
-    weights_s = kappa * delta * grad_norm
+    bump = smooth_bump(phi)
+    weights_s = kappa * bump
     alpha = 1.0 - torch.exp(-weights_s * delta_t)
 
     trans = torch.cumprod(torch.cat([torch.ones((num_rays, 1), device=device), 1.0 - alpha + 1e-10], dim=1), dim=1)
