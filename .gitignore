@@ -1,5 +1,6 @@
 __pycache__/
 checkpoints/
+checkpoints_full/
 outputs/
 *.pyc
 *.log

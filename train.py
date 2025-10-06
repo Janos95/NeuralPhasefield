@@ -36,6 +36,45 @@ def train(args):
     model = PhaseFieldModel().to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
+    wandb_run = None
+    if args.wandb:
+        try:
+            import wandb
+        except ImportError as err:  # pragma: no cover - optional dependency guard
+            raise ImportError("Weights & Biases is not installed. Install it or omit --wandb.") from err
+
+        tags = None
+        if args.wandb_tags:
+            tags = [tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()]
+
+        wandb_init_kwargs = {
+            "project": args.wandb_project,
+            "entity": args.wandb_entity,
+            "name": args.wandb_run_name,
+            "group": args.wandb_group,
+            "tags": tags,
+            "mode": args.wandb_mode,
+            "config": {
+                "dataset_root": args.dataset_root,
+                "rays_per_batch": args.rays_per_batch,
+                "num_samples": args.num_samples,
+                "near": args.near,
+                "far": args.far,
+                "eps_rend": args.eps_rend,
+                "eps_pen": args.eps_pen,
+                "kappa": args.kappa,
+                "lambda_mm": args.lambda_mm,
+                "lr": args.lr,
+                "seed": args.seed,
+                "device": args.device,
+                "max_iters": args.max_iters,
+            },
+        }
+
+        # Drop keys with None values to keep the call clean.
+        wandb_init_kwargs = {k: v for k, v in wandb_init_kwargs.items() if v is not None}
+        wandb_run = wandb.init(**wandb_init_kwargs)
+
     start_step = 0
     if args.resume is not None:
         ckpt_path = Path(args.resume)
@@ -73,13 +112,24 @@ def train(args):
         optimizer.step()
 
         if step % args.log_interval == 0:
-            print(f"step {step:06d} | loss {loss.item():.5f} | img {img_loss.item():.5f} | mm {mm_loss.item():.5f}")
+            total_loss = loss.item()
+            img_val = img_loss.item()
+            mm_val = mm_loss.item()
+            print(f"step {step:06d} | loss {total_loss:.5f} | img {img_val:.5f} | mm {mm_val:.5f}")
+            if wandb_run is not None:
+                wandb.log({
+                    "loss/total": total_loss,
+                    "loss/img": img_val,
+                    "loss/mm": mm_val,
+                }, step=step)
 
         if step % args.psnr_interval == 0:
             with torch.no_grad():
                 mse = img_loss.item()
                 psnr = -10.0 * torch.log10(torch.tensor(mse + 1e-10)).item()
             print(f"step {step:06d} | psnr {psnr:.2f} dB")
+            if wandb_run is not None:
+                wandb.log({"metrics/psnr": psnr}, step=step)
 
         if step % args.save_interval == 0:
             ckpt_path = Path(args.checkpoint_dir) / f"step_{step:06d}.pt"
@@ -88,6 +138,8 @@ def train(args):
     final_ckpt = Path(args.checkpoint_dir) / "latest.pt"
     save_checkpoint(final_ckpt, args.max_iters, model, optimizer)
     print(f"Training complete. Saved final checkpoint to {final_ckpt}")
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
@@ -110,5 +162,12 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="phasefield-nerf")
+    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-run-name", type=str, default=None)
+    parser.add_argument("--wandb-group", type=str, default=None)
+    parser.add_argument("--wandb-tags", type=str, default=None, help="Comma-separated list of WandB tags")
+    parser.add_argument("--wandb-mode", type=str, default="online", choices=["online", "offline", "disabled"], help="WandB operating mode")
     args = parser.parse_args()
     train(args)
