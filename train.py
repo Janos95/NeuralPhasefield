@@ -110,7 +110,12 @@ def train(args):
         grad_norm_sq = torch.sum(grad_samples ** 2, dim=-1)
         mm_penalty = args.eps_pen * grad_norm_sq + (1.0 / args.eps_pen) * (phi_samples ** 2 - 1.0) ** 2
         mm_loss = mm_penalty.mean()
-        loss = img_loss + args.lambda_mm * mm_loss
+        lambda_mm_eff = args.lambda_mm
+        if args.lambda_mm_ramp_iters > 0:
+            ramp = min(1.0, step / args.lambda_mm_ramp_iters)
+            lambda_mm_eff = lambda_mm_eff * ramp
+
+        loss = img_loss + lambda_mm_eff * mm_loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -126,6 +131,7 @@ def train(args):
                     "loss/total": total_loss,
                     "loss/img": img_val,
                     "loss/mm": mm_val,
+                    "loss/lambda_mm_eff": lambda_mm_eff,
                 }, step=step)
 
         if step % args.psnr_interval == 0:
@@ -159,6 +165,12 @@ if __name__ == "__main__":
     parser.add_argument("--eps-pen", type=float, default=0.02)
     parser.add_argument("--kappa", type=float, default=1.0)
     parser.add_argument("--lambda-mm", type=float, default=1e-2)
+    parser.add_argument(
+        "--lambda-mm-ramp-iters",
+        type=int,
+        default=0,
+        help="Linearly ramp lambda_mm from 0 to its target value over this many steps.",
+    )
     parser.add_argument(
         "--train-frame-indices",
         type=str,
