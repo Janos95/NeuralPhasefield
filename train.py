@@ -32,7 +32,11 @@ def load_checkpoint(path: Path, model: nn.Module, optimizer: Optional[torch.opti
 def train(args):
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
-    dataset = BlenderDataset(args.dataset_root, split="train")
+    frame_subset = None
+    if args.train_frame_indices:
+        frame_subset = [int(item.strip()) for item in args.train_frame_indices.split(",") if item.strip()]
+
+    dataset = BlenderDataset(args.dataset_root, split="train", frame_subset=frame_subset)
     model = PhaseFieldModel().to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
@@ -68,6 +72,7 @@ def train(args):
                 "seed": args.seed,
                 "device": args.device,
                 "max_iters": args.max_iters,
+                "train_frame_indices": frame_subset,
             },
         }
 
@@ -154,6 +159,12 @@ if __name__ == "__main__":
     parser.add_argument("--eps-pen", type=float, default=0.02)
     parser.add_argument("--kappa", type=float, default=1.0)
     parser.add_argument("--lambda-mm", type=float, default=1e-2)
+    parser.add_argument(
+        "--train-frame-indices",
+        type=str,
+        default=None,
+        help="Comma-separated list of frame indices to train on (e.g. '0' to overfit a single image).",
+    )
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--max-iters", type=int, default=200_000)
     parser.add_argument("--log-interval", type=int, default=500)

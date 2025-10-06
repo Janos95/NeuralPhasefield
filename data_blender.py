@@ -2,7 +2,7 @@ import json
 import math
 import os
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import imageio.v3 as iio
 import numpy as np
@@ -29,7 +29,7 @@ class FrameRecord:
 class BlenderDataset:
     """Minimal loader for Blender-formatted NeRF datasets."""
 
-    def __init__(self, root: str, split: str = "train") -> None:
+    def __init__(self, root: str, split: str = "train", frame_subset: Optional[Sequence[int]] = None) -> None:
         self.root = root
         self.split = split
         self.meta_path = os.path.join(root, f"transforms_{split}.json")
@@ -40,6 +40,18 @@ class BlenderDataset:
             meta = json.load(f)
         self.camera_angle_x = float(meta["camera_angle_x"])
         frames = meta["frames"]
+
+        if frame_subset is not None:
+            max_index = len(frames) - 1
+            filtered: List[dict] = []
+            for idx in frame_subset:
+                if idx < 0 or idx > max_index:
+                    raise IndexError(
+                        f"Requested frame index {idx} is out of range for split '{split}' with {len(frames)} frames."
+                    )
+                filtered.append(frames[idx])
+            frames = filtered
+        self.frame_subset = frame_subset
 
         records: List[FrameRecord] = []
         for frame in frames:
@@ -98,6 +110,9 @@ class BlenderDataset:
 
     def get_image(self, index: int) -> torch.Tensor:
         return self.images[index]
+
+    def __len__(self) -> int:
+        return self.num_images
 
     def generate_rays_for_pose(self, pose: torch.Tensor, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         ii = self.pixel_i.reshape(-1).to(device)
